@@ -1,5 +1,5 @@
 import numpy as np
-from scipy.integrate import odeint
+from scipy.integrate import odeint, solve_ivp
 import matplotlib.pyplot as plt
 
 # ----------------------------
@@ -57,49 +57,66 @@ params_cb['u11_basal'] = params_cb['u11_basal_microU_mL'] * params_cb['V11_vol']
 params_cb['u2_basal']  = params_cb['u2_basal_pg_mL']    * params_cb['V2_vol'] *1000.0
 
 # ----------------------------
+# Precompute constants
+# ----------------------------
+def prepare_params_do(p):
+    p = dict(p)
+    p['AMP_over_K1'] = p['AMP_conc'] / p['K1']
+    p['eps'] = 1e-12
+    return p
+params_do = prepare_params_do(params_do)
+
+# ----------------------------
 # Dual Oscillator fluxes (Appendix A)
 # ----------------------------
-# ---------- GLUT2 and GK ----------
 def Jglut(Ge, Gi, p):
-    # Eq. (1): Jglut = Vglut * (Ge - Gi) * Kglut / ((Kglut+Ge)(Kglut+Gi))   [mM/ms]
     Kg = p['Kglut']; V = p['Vglut']
     return V * (Ge - Gi) * Kg / ((Kg + Ge) * (Kg + Gi))
 
 def JGK(Gi, p):
-    # Eq. (A.4) Hill GK  [mM/ms]
     Vgk, Kgk, n = p['Vgk'], p['Kgk'], p['ngk']
     x = (Gi / Kgk)**n
     return Vgk * x / (1.0 + x)
 
-
-# ---------- GPDH ----------
 def JGPDH(FBP_uM, p):
-    # Eq. (A.5)   JGPDH = kGPDH * sqrt(FBP / 1 μM)   [μM/ms]
     return p['KGPDH'] * np.sqrt(max(FBP_uM, 0.0))
 
-
-# ---------- PFK (exact MWC form, Eq. A.6–A.7) ----------
-def JPFK(F6P_uM, FBP_uM, ATP_uM, p):
-    K1,K2,K3,K4 = p['K1'],p['K2'],p['K3'],p['K4']        # μM
+def JPFK_exact16(F6P_uM, FBP_uM, ATP_uM, p):
+    """
+    Exact MWC form (Eq. A.6–A.7) using vectorized enumeration over i,j,k,l in {0,1}.
+    This preserves original dynamics while avoiding Python loops in the inner RHS.
+    """
+    A = p['AMP_over_K1']        # AMP/K1
+    B = FBP_uM / p['K2']
+    C = F6P_uM / p['K3']
+    D = ATP_uM / p['K4']
     f13,f23,f41,f42,f43 = p['f13'],p['f23'],p['f41'],p['f42'],p['f43']
     lam = p['lambda_pfk']
-    AMP_uM = p['AMP_conc']                               # μM (fixed)
 
-    def omega(i,j,k,l):
-        num = ( (AMP_uM/K1)**i * (FBP_uM/K2)**j * (F6P_uM/K3)**k * (ATP_uM/K4)**l )
-        den = ( (f13**(i*k)) * (f23**(j*k)) * (f41**(i*l)) * (f42**(j*l)) * (f43**(k*l)) )
-        return num/den
+    # All 16 combinations
+    i = np.array([0,0,0,0, 0,0,0,0, 1,1,1,1, 1,1,1,1], dtype=float)
+    j = np.array([0,0,0,0, 1,1,1,1, 0,0,0,0, 1,1,1,1], dtype=float)
+    k = np.array([0,0,1,1, 0,0,1,1, 0,0,1,1, 0,0,1,1], dtype=float)
+    l = np.array([0,1,0,1, 0,1,0,1, 0,1,0,1, 0,1,0,1], dtype=float)
 
-    # denominator: sum over all 16 terms
-    den_sum = sum(omega(i,j,k,l) for i in (0,1) for j in (0,1) for k in (0,1) for l in (0,1))
-    # numerator: (1-λ) ω1110 + λ * sum over i,j,l with k=1
-    num = (1.0 - lam) * omega(1,1,1,0) + lam * sum(omega(i,j,1,l) for i in (0,1) for j in (0,1) for l in (0,1))
+    num_pow = (A**i) * (B**j) * (C**k) * (D**l)
+    den_fac = (f13**(i*k)) * (f23**(j*k)) * (f41**(i*l)) * (f42**(j*l)) * (f43**(k*l))
+    omega = num_pow / den_fac
 
-    return p['Vmax'] * num / max(den_sum, 1e-30)         # μM/ms
+    den_sum = np.sum(omega)
 
+    # numerator: (1-λ) ω1110 + λ * sum_{i,j,l} ω(i,j,1,l)
+    # index where (i,j,k,l) = (1,1,1,0) → position 14 (0-based)
+    # safer: mask for k=1
+    mask_k1 = (k == 1.0)
+    # mask for the single 1110 term
+    mask_1110 = (i == 1.0) & (j == 1.0) & (k == 1.0) & (l == 0.0)
+    num = (1.0 - lam) * np.sum(omega[mask_1110]) + lam * np.sum(omega[mask_k1])
+
+    return p['Vmax'] * num / max(den_sum, 1e-30)
 
 def dual_rhs(x, t_ms, Ge_of_t, p):
-    eps = 1e-12
+    eps = p['eps']
     Gi,G6P,FBP,NADHm,ADPm,Cam,phi,V,n,Cac,Caer,ATPc = x
 
     # clamp positives
@@ -112,10 +129,10 @@ def dual_rhs(x, t_ms, Ge_of_t, p):
     # Glycolysis (unit consistency: mM↔μM)
     j_glut = Jglut(Ge, Gi, p)                 # mM/ms
     j_gk   = JGK(Gi, p)                       # mM/ms
-    F6P_mM = 0.3*G6P/1000.0                   # if G6P is μM, convert to mM then back to μM for PFK
+    F6P_mM = 0.3*G6P/1000.0
     F6P_uM = F6P_mM*1000.0
-    j_pfk  = JPFK(F6P_uM, FBP, ATPc, p)       # μM/ms
-    j_gpdh = JGPDH(FBP, p)                    # μM/ms
+    j_pfk  = JPFK_exact16(F6P_uM, FBP, ATPc, p)  # μM/ms
+    j_gpdh = JGPDH(FBP, p)                      # μM/ms
 
     dGi  = j_glut - j_gk
     dG6P = j_gk*1000.0 - j_pfk
@@ -165,13 +182,10 @@ def dual_rhs(x, t_ms, Ge_of_t, p):
 
     return np.array([dGi,dG6P,dFBP,dNADHm,dADPm,dCam,dphi,dV,dn,dCac,dCaer,dATPc])
 
-
-
-
 # ----------------------------
 # Cobelli model (Appendix B)
 # ----------------------------
-def k02_of_u1(u1):  # simple monotone dependence (you can replace with the paper's fit if you have it)
+def k02_of_u1(u1):
     return 1e-4 + 1e-9*u1
 
 def cobelli_rhs(u, t_min, p, Ix_g_min=None, Iu_u_min=None):
@@ -186,36 +200,36 @@ def cobelli_rhs(u, t_min, p, Ix_g_min=None, Iu_u_min=None):
     G1 = 0.5*(1+np.tanh(p['b11']*(e21+p['c11'])))
     H1 = 0.5*(1-np.tanh(p['b12']*(e12+p['c12'])) + (1-np.tanh(p['b13']*e12+p['c13'])))
     M1 = 0.5*(1-np.tanh(p['b14']*(ex+p['c14'])))
-    F1 = p['a11']*G1*H1*M1             # g/min
+    F1 = p['a11']*G1*H1*M1
 
     H2 = 0.5*p['a21']*(1+np.tanh(p['b21']*(e12+p['c21'])))
     M2 = 0.5*p['a22']*(1+np.tanh(p['b22']*(ex+p['c22'])))
-    F2 = H2 + M2                        # g/min
+    F2 = H2 + M2
 
     if u1 > 2.52e4:
         M31 = 0.5*(1+np.tanh(p['b31']*(u1+p['c31'])))
         M32 = p['a31']*u1 + p['a32']
-        F3 = M31*M32                    # g/min
+        F3 = M31*M32
     else:
         F3 = 0.0
 
     H4 = 0.5*(1+np.tanh(p['b41']*(e13+p['c41'])))
     M4 = 0.5*(1+np.tanh(p['b42']*(ex+p['c42'])))
-    F4 = p['a41']*H4*M4                 # g/min
+    F4 = p['a41']*H4*M4
 
     M51 = p['a51']*np.tanh(p['b51']*(ex+p['c51']))
     M52 = p['a52']*ex + p['a53']
-    F5 = M51 + M52                      # g/min
+    F5 = M51 + M52
 
-    W  = 0.5*p['aw']*(1+np.tanh(p['bw']*(ex+p['cw'])))  # µU/min
-    F6 = 0.5*p['alpha6']*(1+np.tanh(p['b6']*(ex+p['c6']))) * u2p  # µU/min
+    W  = 0.5*p['aw']*(1+np.tanh(p['bw']*(ex+p['cw'])))
+    F6 = 0.5*p['alpha6']*(1+np.tanh(p['b6']*(ex+p['c6']))) * u2p
 
     H7 = 0.5*(1 - np.tanh(p['b71']*(e13+p['c71'])))
     M7 = 0.5*(1 - np.tanh(p['b72']*(ex+p['c72'])))
-    F7 = p['a71']*H7*M7                 # µg/min
+    F7 = p['a71']*H7*M7
 
-    Ix_g = 0.0 if Ix_g_min is None else Ix_g_min(t_min)   # g/min
-    Iu   = 0.0 if Iu_u_min is None else Iu_u_min(t_min)   # µU/min
+    Ix_g = 0.0 if Ix_g_min is None else Ix_g_min(t_min)
+    Iu   = 0.0 if Iu_u_min is None else Iu_u_min(t_min)
 
     g_to_mg = 1000.0
     du1  = g_to_mg*(F1 - F2) - g_to_mg*F3 - g_to_mg*F4 - g_to_mg*F5 + g_to_mg*Ix_g
@@ -224,12 +238,12 @@ def cobelli_rhs(u, t_min, p, Ix_g_min=None, Iu_u_min=None):
     du11 = -(p['m01']+p['m21']+p['m31'])*u11 + p['m12']*u12 + p['m13']*u13 + Iu
     du12 = -(p['m02']+p['m12'])*u12 + p['m21']*u11 + k02_of_u1(u1)*u2p
     du13 = -p['m13']*u13 + p['m31']*u11
-    du2  = -p['h02']*u2 + F7*1000.0     # µg/min -> pg/min
+    du2  = -p['h02']*u2 + F7*1000.0
 
     return np.array([du1,du1p,du2p,du11,du12,du13,du2])
 
 # ----------------------------
-# Two-stage simulation
+# Two-stage simulation utils
 # ----------------------------
 def run_cobelli(t_min, p, Ix_g_min, Iu_u_min):
     u11_0 = p['u11_basal']
@@ -244,40 +258,45 @@ def run_cobelli(t_min, p, Ix_g_min, Iu_u_min):
     Ge_mgdl = sol[:,0]/(p['V1_vol']*10.0)
     return sol, Ge_mgdl
 
-from scipy.integrate import solve_ivp
-
-def _integrate(fun, x0, t_eval_ms, max_step_ms=0.5):
+def _integrate(fun, x0, t_eval_ms, max_step_ms=1.0, rtol=1e-6, atol=1e-9, method="BDF"):
     t0, t1 = float(t_eval_ms[0]), float(t_eval_ms[-1])
     sol = solve_ivp(lambda t,y: fun(y,t), (t0, t1), x0,
-                    t_eval=t_eval_ms, method="BDF",
-                    rtol=1e-6, atol=1e-9, max_step=max_step_ms)
+                    t_eval=t_eval_ms, method=method,
+                    rtol=rtol, atol=atol, max_step=max_step_ms)
     if not sol.success:
         raise RuntimeError(sol.message)
     return sol.y.T
 
-def run_dual_osc(t_eval_ms, t_cb_min, Ge_mM_series, p, burnin_min=10.0,
-                 dt_ms_burn=0.5, max_step_ms=0.5):
+def run_dual_osc(t_eval_ms, t_cb_min, Ge_mM_series, p,
+                 burnin_min=5.0,
+                 dt_ms_burn=1.0,
+                 max_step_ms=1.0,
+                 rtol=1e-6, atol=1e-9,
+                 method="BDF",
+                 force_constant_Ge=None):
 
-    Ge_interp = lambda tms: np.interp(tms/60000.0, t_cb_min, Ge_mM_series)
+    if force_constant_Ge is None:
+        Ge_of_t = lambda tms: np.interp(tms/60000.0, t_cb_min, Ge_mM_series)
+        Ge_basal = Ge_mM_series[0]
+    else:
+        Ge_of_t = lambda _t: force_constant_Ge
+        Ge_basal = force_constant_Ge
 
-    # Burn-in: integrate with small internal step, sample sparsely (e.g., 50 ms)
-    Ge_basal = Ge_mM_series[0]
+    # Burn-in with constant Ge
     Ge_const = lambda _: Ge_basal
-    tb = np.arange(0.0, burnin_min*60000.0 + 50.0, 50.0)  # 50 ms output is plenty for burn-in
+    tb = np.arange(0.0, burnin_min*60000.0 + 50.0, 50.0)
 
     x0 = np.array([Ge_basal, 120.0, 380.0, 0.6, 1.0, 0.12, 150.0, -60.0, 0.1, 0.1, 100.0, 1500.0], float)
     burn_fun = lambda y,t: dual_rhs(y,t,Ge_const,p)
-    x_burn = _integrate(burn_fun, x0, tb, max_step_ms=dt_ms_burn)
+    x_burn = _integrate(burn_fun, x0, tb, max_step_ms=dt_ms_burn, rtol=rtol, atol=atol, method=method)
     x_init = x_burn[-1,:]
 
-    # Main run: small internal step, **coarser output grid**
-    main_fun = lambda y,t: dual_rhs(y,t,Ge_interp,p)
-    return _integrate(main_fun, x_init, t_eval_ms, max_step_ms=max_step_ms)
-
-
+    # Main run
+    main_fun = lambda y,t: dual_rhs(y,t,Ge_of_t,p)
+    return _integrate(main_fun, x_init, t_eval_ms, max_step_ms=max_step_ms, rtol=rtol, atol=atol, method=method)
 
 # ----------------------------
-# Example: 60 min with 100 mg/kg·min IV bolus for 3 min
+# Example inputs
 # ----------------------------
 def Ix_glucose_bolus_gmin(t_min):
     # 70 kg -> 7 g/min for first 3 min
@@ -286,17 +305,20 @@ def Ix_glucose_bolus_gmin(t_min):
 def Iu_insulin_zero(t_min): return 0.0
 
 if __name__ == "__main__":
-    #je potřeba pak zvýšit na 120
     SIM_MIN = 20.0
 
-    # Cobelli (unchanged)
+    # Cobelli
     t_cb_min = np.linspace(0, SIM_MIN, int(SIM_MIN*20)+1)
     cb_sol, Ge_mgdl = run_cobelli(t_cb_min, params_cb, Ix_glucose_bolus_gmin, Iu_insulin_zero)
     Ge_mM = mgdl_to_mM(Ge_mgdl)
 
+    # --- QUICK TEST: run DO at constant glucose to verify oscillations ---
+    FORCE_CONSTANT_GE = False      # set True to test intrinsic bursting
+    GE_CONST_MILLIMOLAR = 11.0
+
     # Dual oscillator
-    dt_internal_ms = 0.5   # internal solver step ceiling
-    dt_out_ms      = 10.0   # output sampling (10 ms also fine)
+    dt_internal_ms = 1.0
+    dt_out_ms      = 10.0
     t_ms_out = np.arange(0.0, SIM_MIN*60000.0 + dt_out_ms, dt_out_ms)
 
     do_sol = run_dual_osc(
@@ -304,9 +326,12 @@ if __name__ == "__main__":
         t_cb_min=t_cb_min,
         Ge_mM_series=Ge_mM,
         p=params_do,
-        burnin_min=10.0,
+        burnin_min=5.0,
         dt_ms_burn=dt_internal_ms,
-        max_step_ms=dt_internal_ms
+        max_step_ms=dt_internal_ms,
+        rtol=1e-6, atol=1e-9,
+        method="BDF",
+        force_constant_Ge=(GE_CONST_MILLIMOLAR if FORCE_CONSTANT_GE else None)
     )
 
     # Plot

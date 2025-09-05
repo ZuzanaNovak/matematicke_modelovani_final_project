@@ -33,8 +33,8 @@ def safe_exp(z, clip=50.0):
 @dataclass
 class DualOscParams:
     # Glycolytic component (Table A1)
-    Vglut: float = 8.0          # mM/ms
-    Kglut: float = 7.0          # mM
+    Vglut: float = 8.0        # mM/ms
+    Kglut: float = 7.0        # mM
     Vgk: float = 0.8            # mM/ms
     Kgk: float = 7.0            # mM
     ngk: float = 4.0
@@ -450,7 +450,9 @@ def simulate(total_minutes: float = 120.0,
     # inside simulate() ------------------------------
 
 # 1 point / 10 seconds (6 per min) instead of 1/sec
-    t_eval_ms = np.linspace(t_span_ms[0], t_span_ms[1], int(total_minutes * 6))
+    # e.g. 10 Hz (every 0.1 s)
+    t_eval_ms = np.linspace(t_span_ms[0], t_span_ms[1], int(total_minutes * 60 * 10))
+
 
     sol = solve_ivp(
         lambda tt, yy: coupled_rhs_ms(tt, yy, dop, cop, Ix, Iu),
@@ -502,5 +504,5 @@ def plot_figure6_like(result):
 # ---------------------------
 
 if __name__ == "__main__":
-    res = simulate(total_minutes=120, load_duration_min=2.0)
+    res = simulate(total_minutes=20, load_duration_min=2.0)
     plot_figure6_like(res)

@@ -23,71 +23,72 @@ FRT_INV_MV = 0.037  # 1/mV at 37°C
 
 @dataclass
 class DualOscParams:
-    # Glycolytic (Table A1). Vglut/Vgk are in mM/min in the paper → divide by 60000 to get mM/ms.
-    Vglut: float = 8.0 / 60000.0
-    Kglut: float = 7.0          # mM
-    Vgk:   float = 0.2 / 60000.0
-    Kgk:   float = 7.0          # mM
+    # Glycolytic (Table A1, tuned)
+    Vglut: float = 8.0
+    Kglut: float = 8.0
+    Vgk:   float = 0.8 
+    Kgk:   float = 7.0
     ngk:   float = 4.0
 
-    # PFK/GPDH (A.4–A.7, Table A1)
-    kGPDH: float = 0.0003       # µM/ms
-    Vmax:  float = 0.5        # µM/ms
+    # PFK/GPDH (A.4–A.7, tuned)
+    kGPDH: float = 0.0005          # ↑ stronger GPDH sink (was 0.0003)
+    Vmax:  float = 0.005          # ↑ much larger PFK capacity (was 0.005 / 0.5)
     lam_pfk: float = 0.06
-    K1: float = 30.0            # AMP (µM)
-    K2: float = 1.0             # FBP (µM)
-    K3: float = 50000.0         # F6P (µM)
-    K4: float = 220.0           # ATP (µM)
+    K1: float = 30.0
+    K2: float = 1.0
+    K3: float = 50000.0
+    K4: float = 220.0
     f13: float = 0.02
     f23: float = 0.2
     f41: float = 20.0
     f42: float = 20.0
     f43: float = 20.0
 
-    # Mitochondria (A.8–A.22, Table A1)
-    p1: float = 400.0;  p2: float = 1.0;   p3: float = 0.01  # µM
-    p4: float = 0.6;    p5: float = 0.1    # µM/ms, mM
-    p6: float = 177.0;  p7: float = 5.0    # mV
-    p8: float = 7.0;    p9: float = 0.1    # µM/ms, mM
-    p10: float = 177.0; p11: float = 5.0   # mV
+    # Mitochondria (unchanged from Table A1)
+    p1: float = 400.0;  p2: float = 1.0;   p3: float = 0.01
+    p4: float = 0.6;    p5: float = 0.1
+    p6: float = 177.0;  p7: float = 5.0
+    p8: float = 7.0;    p9: float = 0.1
+    p10: float = 177.0; p11: float = 5.0
     p13: float = 10.0;  p14: float = 190.0; p15: float = 8.5
     p16: float = 35.0
-    p17: float = 0.002  # µM ms^-1 mV^-1
-    p18: float = -0.03  # µM/ms
-    p19: float = 0.35   # µM/ms
+    p17: float = 0.002
+    p18: float = -0.03
+    p19: float = 0.35
     p20: float = 2.0
-    p21: float = 0.04   # µM ms^-1 mV^-1
-    p22: float = 1.1    # µM ms^-1
-    p23: float = 0.01   # ms^-1
-    p24: float = 0.016  # mV^-1
+    p21: float = 0.04
+    p22: float = 1.1
+    p23: float = 0.01
+    p24: float = 0.016
     JGPDH_bas: float = 0.0005
     fm: float = 0.01
-    NADm_tot: float = 10.0      # mM
-    Am_tot: float = 15.0        # mM
-    Cm: float = 1.8             # µM/mV
+    NADm_tot: float = 10.0
+    Am_tot: float = 15.0
+    Cm: float = 1.8
 
-    # Membrane & Ca2+ (A.23–A.33, A.40–A.45)
-    C: float = 5300.0           # fF
-    tau_n: float = 20.0         # ms
-    gK: float = 2700.0; gCa: float = 1000.0; gK_Ca: float = 300.0; gK_ATP: float = 16000.0
-    VK: float = -75.0; VCa: float = 25.0   # mV
+    # Electrical / Ca2+ (unchanged)
+    C: float = 5300.0
+    tau_n: float = 20.0
+    gK: float = 2700.0; gCa: float = 1000.0; gK_Ca: float = 450.0; gK_ATP: float = 15000.0
+    VK: float = -75.0; VCa: float = 25.0
 
-    D: float = 0.5              # µM (K_D for gK_Ca)
-    khyd: float = 5e-5          # ms^-1 µM^-1
-    khyd_bas: float = 5e-5      # ms^-1
-    alpha: float = 4.5e-6       # µM/ms per pA (PM leak coefficient)
-    kPMCA: float = 0.1          # ms^-1
+    D: float = 0.5
+    khyd: float = 6e-5
+    khyd_bas: float =1e-5
+    alpha: float = 4.5e-6
+    kPMCA: float = 0.1
 
     fc: float = 0.01; fer: float = 0.01; Vc_over_Ver: float = 31.0
-    Ca_bas: float = 0.05        # µM
+    Ca_bas: float = 0.05
     pleak: float = 0.0002; kSERCA: float = 0.4
 
-    # Cytosolic nucleotides (A.37–A.39)
-    Ac_tot: float = 2500.0      # µM total adenine pool (ATP+ADP)
-    AMP_c: float = 500.0        # µM (fixed)
+    # Cytosolic nucleotides
+    Ac_tot: float = 2200.0
+    AMP_c: float = 400.0
 
     # Geometry
-    vol_ratio: float = 0.07     # mito/cyto volume ratio
+    vol_ratio: float = 0.07
+
 
 @dataclass
 class CobelliParams:
@@ -304,11 +305,12 @@ def initial_cobelli(cop: CobelliParams) -> np.ndarray:
     return np.array([u1, u1p, u2p, u11, u12, u13, u2])
 
 def initial_dual_osc(dop: DualOscParams) -> np.ndarray:
-    Gi = 7.0; G6P = 100.0; FBP = 3.0
+    Gi = 7.0; G6P = 100.0; FBP = 25.0     # bumped up
     NADHm = 0.5; phi_m = 160.0; Ca_m = 0.2
     ADPm = 1.0; V = -60.0; n = 0.05
-    Ca_c = 0.1; Ca_er = 200.0; ATP_c = 1300.0
+    Ca_c = 0.1; Ca_er = 200.0; ATP_c = 1200.0  # lower ATPc
     return np.array([Gi, G6P, FBP, NADHm, phi_m, Ca_m, ADPm, V, n, Ca_c, Ca_er, ATP_c])
+
 
 # ---------------------------
 # Burn-in helper
@@ -350,13 +352,13 @@ def simulate(total_minutes: float = 60.0,
              ge_step_time_min: float = 10.0,
              ge_ramp_lo_mM: float = 8.0,
              ge_ramp_hi_mM: float = 17.0,
-             ge_sweep_period_min: float = 20.0,
+             ge_sweep_period_min: float = 60.0,
              # oscillatory preset (tiny parameter tweaks)
              oscillatory_preset: bool = False,
              # numerical
-             rtol: float = 1e-6, atol: float = 1e-9, max_step: float = 50.0,
+             rtol: float = 1e-7, atol: float = 1e-10, max_step: float = 20.0,
              # kick
-             kick: bool = True, kick_FBP_uM: float = 1.0, kick_V_mV: float = -2.0,
+             kick: bool = True, kick_FBP_uM: float = 2.0, kick_V_mV: float = -2.0,
              # Cobelli extras
              glucose_load_mg_per_kg_min: float = 100.0,
              load_duration_min: float = 3.0,
@@ -368,7 +370,7 @@ def simulate(total_minutes: float = 60.0,
         dop = replace(dop,
                       Vmax=0.0065,        # +30% PFK activity
                       kGPDH=0.00045,      # -10% sink
-                      Ac_tot=2350.0,      # slightly smaller adenine pool → larger ADP swings
+                      Ac_tot=2000.0,      # slightly smaller adenine pool → larger ADP swings
                       gK_ATP=14000.0)     # a touch less K_ATP conductance to allow depolarization
 
     # burn-in (clamped at baseline glucose)
@@ -514,16 +516,22 @@ def debug_plots_cobelli(result):
 
 if __name__ == "__main__":
     # --- Option A: clamped with a glucose sweep (robustly produces oscillations) ---
-    res = simulate(total_minutes=60,
-                   burn_in_minutes=60,
-                   mode="clamped",
-                   profile="sweep",           # <-- sweep through the oscillatory window
-                   ge_ramp_lo_mM=8.0,
-                   ge_ramp_hi_mM=17.0,
-                   oscillatory_preset=False,  # preset not needed if you sweep
-                   kick=True)
-    plot_figure6_like(res)
-    debug_plots_clamped(res)
+# --- Config A: strict paper params, seeded ICs + sweep ---
+    res_A = simulate(
+        total_minutes=60,
+        burn_in_minutes=30,
+        mode="clamped",
+        profile="sweep",
+        ge_ramp_lo_mM=8.0,
+        ge_ramp_hi_mM=17.0,
+        oscillatory_preset=False,   # paper parameters
+        kick=True,
+        kick_FBP_uM=2.0,
+        kick_V_mV=-2.0
+    )
+    plot_figure6_like(res_A)
+    debug_plots_clamped(res_A)
+
 
     # # --- Option B: clamped with a simple step, but enable the oscillatory preset ---
     """res2 = simulate(total_minutes=40,

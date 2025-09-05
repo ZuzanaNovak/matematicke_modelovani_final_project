@@ -9,8 +9,6 @@ Notes
 • Units follow the paper (mixed units). Values are taken as-is for reproducibility.
 • We integrate in **milliseconds** for numerical stability. Cobelli (per minute) is scaled internally by /60000.
 • Demo simulates a 70 kg subject with an IV glucose load of 100 mg/kg/min for 3 minutes and runs 120 minutes total.
-
-Author: ChatGPT
 """
 from __future__ import annotations
 import numpy as np
@@ -449,26 +447,33 @@ def simulate(total_minutes: float = 120.0,
     # sample every second for plotting
     t_eval_ms = np.linspace(t_span_ms[0], t_span_ms[1], int(total_minutes * 60))
 
+    # inside simulate() ------------------------------
+
+# 1 point / 10 seconds (6 per min) instead of 1/sec
+    t_eval_ms = np.linspace(t_span_ms[0], t_span_ms[1], int(total_minutes * 6))
+
     sol = solve_ivp(
-        fun=lambda tt, yy: coupled_rhs_ms(tt, yy, dop, cop, Ix, Iu),
-        t_span=t_span_ms,
-        y0=y0,
-        method="LSODA",
-        rtol=1e-6,
-        atol=1e-9,
-        t_eval=t_eval_ms  # <-- Pass t_eval here!
+        lambda tt, yy: coupled_rhs_ms(tt, yy, dop, cop, Ix, Iu),
+        t_span_ms,
+        y0,
+        method="BDF",          # fast + robust here
+        t_eval=t_eval_ms,      # << use this, not dense_output
+        rtol=2e-4, atol=2e-7,  # loosen slightly (big speedup)
+        max_step=100.0         # allow big strides (100 ms)
     )
 
     if not sol.success:
         raise RuntimeError("Integration failed: " + sol.message)
 
+    # use the points you asked for:
     result = {
-        "t_min": sol.t / 60000.0,  # sol.t now contains the evaluation points
+        "t_min": sol.t / 60000.0,
         "u": sol.y[:7, :],
         "x": sol.y[7:, :],
         "params": {"dual": dop, "cobelli": cop},
         "description": "Variables: u=[u1,u1p,u2p,u11,u12,u13,u2]; x=[Gi,G6P,FBP,NADHm,phi_m,Ca_m,ADPm,V,n,Ca_c,Ca_er,ATP_c]"
     }
+
     return result
 
 
@@ -497,5 +502,5 @@ def plot_figure6_like(result):
 # ---------------------------
 
 if __name__ == "__main__":
-    res = simulate(total_minutes=20, glucose_load_mg_per_kg_min=40.0, load_duration_min=2.0)
+    res = simulate(total_minutes=120, load_duration_min=2.0)
     plot_figure6_like(res)

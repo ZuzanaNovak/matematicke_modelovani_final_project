@@ -1,15 +1,16 @@
 """
 Reimplementation of Chew et al. (2009) "Modeling of oscillatory bursting activity of pancreatic beta-cells under regulated glucose stimulation"
+
 - Dual Oscillator Model (glycolysis + mitochondria + electrical/ER Ca2+)
-- Cobelli & Mari whole-body glucose regulation (glucose–insulin–glucagon)
+- Optional Cobelli & Mari whole-body glucose regulation (glucose–insulin–glucagon)
 - Coupling via plasma glucose -> GLUT2 uptake -> intracellular glucose -> J_GK
 
 Notes
 -----
-• Units follow the paper (mixed units). Values are taken as-is for reproducibility.
+• Units follow the paper (mixed units). Per-minute rates are converted to per-millisecond where needed.
 • We integrate in **milliseconds** for numerical stability. Cobelli (per minute) is scaled internally by /60000.
-• Demo simulates a 70 kg subject with an IV glucose load of 100 mg/kg/min for 3 minutes and runs 120 minutes total.
 """
+
 from __future__ import annotations
 import numpy as np
 from dataclasses import dataclass
@@ -33,18 +34,19 @@ def safe_exp(z, clip=50.0):
 @dataclass
 class DualOscParams:
     # Glycolytic component (Table A1)
-    Vglut: float = 8.0        # mM/ms
-    Kglut: float = 7.0        # mM
-    Vgk: float = 0.8            # mM/ms
-    Kgk: float = 7.0            # mM
-    ngk: float = 4.0
-    kGPDH: float = 0.0005       # µM/ms
-    Vmax: float = 0.005         # µM/ms
-    phi: float = 0.06           # dimensionless
-    K1: float = 30.0            # µM
-    K2: float = 1.0             # µM
-    K3: float = 50000.0         # µM
-    K4: float = 220.0           # µM
+    # Chew A1 gives Vglut and Vgk in mM/min. Convert to mM/ms by /60000.
+    Vglut: float = 8.0 / 60000.0   # mM/ms   (FIXED)
+    Kglut: float = 7.0             # mM      (concentration; do NOT scale)
+    Vgk:   float = 0.8 / 60000.0   # mM/ms   (FIXED)
+    Kgk:   float = 7.0             # mM
+    ngk:   float = 4.0
+    kGPDH: float = 0.0005          # µM/ms
+    Vmax:  float = 0.005           # µM/ms
+    phi:   float = 0.06
+    K1: float = 30.0               # µM
+    K2: float = 1.0                # µM
+    K3: float = 50000.0            # µM
+    K4: float = 220.0              # µM
     f13: float = 0.02
     f23: float = 0.2
     f41: float = 20.0
@@ -275,7 +277,7 @@ def dual_oscillator_rhs(t_min, x, Ge_mg_per_100ml: float, par: DualOscParams):
     Gi, G6P, FBP, NADHm, phi_m, Ca_m, ADPm, V, n, Ca_c, Ca_er, ATP_c = x
 
     # GLUT2 transport + GK
-    Ge_mM = Ge_mg_per_100ml/18.0  # use as-is (paper's mixed units)
+    Ge_mM = Ge_mg_per_100ml/18.0  # mg/dL -> mM
     Jglut = par.Vglut * (Ge_mM - Gi) * par.Kglut / ((par.Kglut + Ge_mM)*(par.Kglut + Gi))  # mM/ms
     JGK   = par.Vgk * (Gi**par.ngk) / (par.Kgk**par.ngk + Gi**par.ngk)                     # mM/ms
     dGi   = Jglut - JGK
@@ -289,7 +291,7 @@ def dual_oscillator_rhs(t_min, x, Ge_mg_per_100ml: float, par: DualOscParams):
     dFBP  = JPFK - 0.5*JGPDH
 
     # Mitochondria
-    phi_eff = np.clip(phi_m, 120.0, 200.0) 
+    phi_eff = np.clip(phi_m, 120.0, 200.0)
     NADm = max(par.NADm_tot - NADHm, 0.0)
     RATm = max((par.Am_tot - ADPm)/max(ADPm, 1e-12), 0.0)  # ATPm/ADPm
     JPDH = ((par.p1 * NADm) / (par.p2 * NADm + NADHm)) * (Ca_m / (par.p3 + Ca_m)) * (JGPDH + par.JGPDH_bas)
@@ -305,7 +307,6 @@ def dual_oscillator_rhs(t_min, x, Ge_mg_per_100ml: float, par: DualOscParams):
     JNaCa  = par.p23 * (Ca_m / max(Ca_c, 1e-9)) * safe_exp(par.p24 * phi_eff)
 
     dphi_m = (JH_res - JH_atp - JANT - JH_leak - JNaCa - 2.0*Juni) / par.Cm
-    
 
     dCa_m  = -par.fm * (JNaCa - Juni)
     dADPm  = 0.001 * (JANT - JF1F0)
@@ -339,8 +340,14 @@ def dual_oscillator_rhs(t_min, x, Ge_mg_per_100ml: float, par: DualOscParams):
     dCa_c  = par.fc  * (Jmem + Jer + par.vol_ratio*(JNaCa - Juni))
     dCa_er = -par.fer * par.Vc_over_Ver * Jer
 
+    # Hydrolysis consumes ATP
     Jhyd   = (par.khyd * Ca_c + par.khyd_bas) * ATP_c
-    dATP_c = Jhyd - par.vol_ratio * JANT
+    dATP_c = -Jhyd + par.vol_ratio * JANT
+
+
+    ADP_c = max(par.Ac_tot - ATP_c, 0.0)
+               
+
 
     return np.array([dGi, dG6P, dFBP, dNADHm, dphi_m, dCa_m, dADPm, dV, dn, dCa_c, dCa_er, dATP_c])
 
@@ -375,11 +382,7 @@ def cobelli_rhs(t_min, u, par: CobelliParams, Ix_func: Callable[[float], float],
 # ---------------------------
 
 def coupled_rhs_ms(t_ms, y, dop: DualOscParams, cop: CobelliParams, Ix_func, Iu_func):
-    """
-    RHS with time in **milliseconds**.
-    - Dual-oscillator is per ms (leave as-is).
-    - Cobelli is per minute -> convert to per ms by dividing by 60000.
-    """
+    """RHS with time in **milliseconds**. Cobelli (per min) -> per ms by /60000."""
     t_min = t_ms / 60000.0
     u = y[:7]
     x = y[7:]
@@ -417,16 +420,74 @@ def initial_dual_osc(dop: DualOscParams) -> np.ndarray:
     return np.array([Gi, G6P, FBP, NADHm, phi_m, Ca_m, ADPm, V, n, Ca_c, Ca_er, ATP_c])
 
 # ---------------------------
+# Burn-in & clamped RHS helpers
+# ---------------------------
+
+def rhs_clamped_ms(t_ms, x, dop, Ge_func):
+    """Dual-oscillator only, driven by extracellular glucose Ge(t) in mg/dL (mg/100 ml)."""
+    t_min = t_ms / 60000.0
+    Ge_mg_per_100ml = Ge_func(t_min)
+    return dual_oscillator_rhs(t_min, x, Ge_mg_per_100ml, dop)
+
+def burn_in_clamped(x0, dop, Ge0_mM=11.0, minutes=30.0):
+    """Pre-equilibrate at constant basal glucose (in vitro)."""
+    def Ge_const(_): return Ge0_mM * 18.0  # mM → mg/dL
+    t_span = (0.0, minutes * 60000.0)
+    sol = solve_ivp(lambda tt, xx: rhs_clamped_ms(tt, xx, dop, Ge_const),
+                    t_span, x0, method="BDF",
+                    rtol=2e-4, atol=2e-7, max_step=100.0)
+    if not sol.success:
+        raise RuntimeError("Burn-in failed: " + sol.message)
+    return sol.y[:, -1]
+
+# ---------------------------
 # Simulation API
 # ---------------------------
 
 def simulate(total_minutes: float = 120.0,
              glucose_load_mg_per_kg_min: float = 100.0,
              load_duration_min: float = 3.0,
-             BW_kg: float = 70.0):
+             BW_kg: float = 70.0,
+             burn_in_minutes: float = 30.0,
+             mode: str = "clamped"):
+    """
+    mode:
+      - "clamped": in-vitro, prescribed Ge(t) (matches paper panels)
+      - "cobelli": in-vivo, whole-body + beta-cell
+    """
     dop = DualOscParams()
-    cop = CobelliParams(BW_kg=BW_kg)
 
+    def make_eval(Tmin):
+        t_span_ms = (0.0, Tmin * 60000.0)
+        t_eval_ms = np.linspace(t_span_ms[0], t_span_ms[1], int(Tmin * 60 * 10))  # 10 Hz
+        return t_span_ms, t_eval_ms
+
+    if mode.lower() == "clamped":
+        # Chew-like step: 11 mM -> 15 mM at 10 min (tune as needed)
+        def Ge_profile(t_min):
+            Ge_mM = 11.0 if t_min < 10.0 else 15.0
+            return Ge_mM * 18.0  # mM -> mg/dL
+
+        x0 = initial_dual_osc(dop)
+        x0 = burn_in_clamped(x0, dop, Ge0_mM=11.0, minutes=burn_in_minutes)
+
+        t_span_ms, t_eval_ms = make_eval(total_minutes)
+        sol = solve_ivp(lambda tt, xx: rhs_clamped_ms(tt, xx, dop, Ge_profile),
+                        t_span_ms, x0, method="BDF",
+                        t_eval=t_eval_ms, rtol=2e-4, atol=2e-7, max_step=100.0)
+        if not sol.success:
+            raise RuntimeError("Clamped simulation failed: " + sol.message)
+
+        return {
+            "t_min": sol.t / 60000.0,
+            "u": None,             # no Cobelli state in clamped mode
+            "x": sol.y,
+            "params": {"dual": dop, "Ge_profile": Ge_profile},
+            "description": "Clamped-Ge run; x=[Gi,G6P,FBP,NADHm,phi_m,Ca_m,ADPm,V,n,Ca_c,Ca_er,ATP_c]"
+        }
+
+    # ----- Cobelli mode -----
+    cop = CobelliParams(BW_kg=BW_kg)
     load_rate = glucose_load_mg_per_kg_min * BW_kg
 
     def smooth_step(t_min, t0, t1, rate, tau=0.2):
@@ -434,58 +495,57 @@ def simulate(total_minutes: float = 120.0,
         s1 = 1.0 / (1.0 + np.exp(-(t_min - t1)/tau))
         return rate * np.clip(s0 - s1, 0.0, 1.0)
 
-    def Ix(t_min):
+    def Ix(t_min):  # mg/min infusion
         return smooth_step(t_min, 0.0, load_duration_min, load_rate, tau=0.2)
 
-    def Iu(t_min):
+    def Iu(_):     # no exogenous insulin
         return 0.0
 
     y0 = np.concatenate([initial_cobelli(cop), initial_dual_osc(dop)])
 
-    # Integrate in **milliseconds**
-    t_span_ms = (0.0, total_minutes * 60000.0)
-    # sample every second for plotting
-    t_eval_ms = np.linspace(t_span_ms[0], t_span_ms[1], int(total_minutes * 60))
+    # Burn-in with no infusion
+    t_span_burn = (0.0, burn_in_minutes * 60000.0)
+    sol_burn = solve_ivp(lambda tt, yy: coupled_rhs_ms(tt, yy, dop, cop, Ix=lambda _:0.0, Iu=lambda _:0.0),
+                         t_span_burn, y0, method="BDF", rtol=2e-4, atol=2e-7, max_step=100.0)
+    if not sol_burn.success:
+        raise RuntimeError("Cobelli burn-in failed: " + sol_burn.message)
+    y0 = sol_burn.y[:, -1]
 
-    # inside simulate() ------------------------------
-
-# 1 point / 10 seconds (6 per min) instead of 1/sec
-    # e.g. 10 Hz (every 0.1 s)
-    t_eval_ms = np.linspace(t_span_ms[0], t_span_ms[1], int(total_minutes * 60 * 10))
-
-
-    sol = solve_ivp(
-        lambda tt, yy: coupled_rhs_ms(tt, yy, dop, cop, Ix, Iu),
-        t_span_ms,
-        y0,
-        method="BDF",          # fast + robust here
-        t_eval=t_eval_ms,      # << use this, not dense_output
-        rtol=2e-4, atol=2e-7,  # loosen slightly (big speedup)
-        max_step=100.0         # allow big strides (100 ms)
-    )
-
+    # Main run
+    t_span_ms, t_eval_ms = make_eval(total_minutes)
+    sol = solve_ivp(lambda tt, yy: coupled_rhs_ms(tt, yy, dop, cop, Ix, Iu),
+                    t_span_ms, y0, method="BDF",
+                    t_eval=t_eval_ms, rtol=2e-4, atol=2e-7, max_step=100.0)
     if not sol.success:
-        raise RuntimeError("Integration failed: " + sol.message)
+        raise RuntimeError("Cobelli simulation failed: " + sol.message)
 
-    # use the points you asked for:
-    result = {
+    return {
         "t_min": sol.t / 60000.0,
         "u": sol.y[:7, :],
         "x": sol.y[7:, :],
         "params": {"dual": dop, "cobelli": cop},
-        "description": "Variables: u=[u1,u1p,u2p,u11,u12,u13,u2]; x=[Gi,G6P,FBP,NADHm,phi_m,Ca_m,ADPm,V,n,Ca_c,Ca_er,ATP_c]"
+        "description": "Cobelli-coupled run; u=[u1,u1p,u2p,u11,u12,u13,u2]; x=[Gi,G6P,FBP,NADHm,phi_m,Ca_m,ADPm,V,n,Ca_c,Ca_er,ATP_c]"
     }
 
-    return result
+# ---------------------------
+# Convenience metrics & plotting
+# ---------------------------
 
-
-# convenience metric
 def compute_Jo(NADHm, phi_m, par: DualOscParams):
     phi_eff = np.clip(phi_m, 120.0, 200.0)
     return ((par.p4 * NADHm) / (par.p5 + NADHm)) * (1.0 / (1.0 + safe_exp((phi_eff - par.p10)/par.p11)))
 
+def compute_JGK(Gi_mM, par: DualOscParams):
+    return par.Vgk * (Gi_mM**par.ngk) / (par.Kgk**par.ngk + Gi_mM**par.ngk)  # mM/ms
+
+def compute_o_inf(ATP_c_uM, ADP_c_uM):
+    MgADP = 0.165 * ADP_c_uM
+    ADP3  = 0.135 * ADP_c_uM
+    ATP4  = 0.005 * ATP_c_uM
+    return (0.08*(1 + 2*MgADP/17.0) + 0.89*(MgADP/17.0)**2) / (((1 + MgADP/17.0)**2)*(1 + ADP3/26.0 + ATP4/1.0))
+
 def plot_figure6_like(result):
-    """Replicate panels (a)-(f): Ca_c, V, FBP, ATP_c, NADHm, Jo."""
+    """Panels: Ca_c, V, FBP, ATP_c, NADHm, Jo."""
     import matplotlib.pyplot as plt
     t = result["t_min"]; x = result["x"]; par = result["params"]["dual"]
     Ca_c = x[9]; V = x[7]; FBP = x[2]; ATP_c = x[11]; NADHm = x[3]; phi_m = x[4]
@@ -499,10 +559,56 @@ def plot_figure6_like(result):
     plt.figure(); plt.plot(t, Jo);   plt.xlabel('Time, t (min)'); plt.ylabel('Rate of oxygen consumption, $J_o$ (µM/ms)'); plt.title('(f)')
     plt.show()
 
+def debug_plots_clamped(result):
+    """Show Ge(t), JGK, JPFK, and KATP gate during a clamped run."""
+    import matplotlib.pyplot as plt
+    t = result["t_min"]; x = result["x"]; par = result["params"]["dual"]
+
+    # Ge profile used
+    Ge_profile = result["params"].get("Ge_profile", lambda tt: 11.0*18.0)
+    Ge = np.array([Ge_profile(tt) for tt in t])
+    Ge_mM = Ge/18.0
+
+    Gi, FBP, ATP_c = x[0], x[2], x[11]
+    ADP_c = np.maximum(par.Ac_tot - ATP_c, 0.0)
+
+    JGK = compute_JGK(Gi, par) * 1000.0           # µM/ms for scale vs JPFK
+    JPFK = pfk_rate(0.3*x[1], FBP, ATP_c, par.AMP_c, par)
+    oinf = compute_o_inf(ATP_c, ADP_c)
+
+    fig, axs = plt.subplots(4,1, figsize=(8,8), sharex=True)
+    axs[0].plot(t, Ge_mM);     axs[0].set_ylabel("Ge (mM)");         axs[0].set_title("Driver & key fluxes")
+    axs[1].plot(t, JGK);       axs[1].set_ylabel("JGK (µM/ms)")
+    axs[2].plot(t, JPFK);      axs[2].set_ylabel("JPFK (µM/ms)")
+    axs[3].plot(t, oinf);      axs[3].set_ylabel("o_inf (KATP)");    axs[3].set_xlabel("Time (min)")
+    plt.tight_layout(); plt.show()
+
+def debug_plots_cobelli(result):
+    """Plasma glucose/insulin/glucagon from Cobelli mode."""
+    import matplotlib.pyplot as plt
+    t = result["t_min"]; u = result["u"]; cop = result["params"]["cobelli"]
+    Ge_dL = u[0]/cop.V1            # mg/dL
+    insulin = u[3]/cop.V11         # µU/mL
+    glucagon = u[6]/cop.V2         # pg/mL
+
+    fig, axs = plt.subplots(3,1, figsize=(8,7), sharex=True)
+    axs[0].plot(t, Ge_dL);     axs[0].set_ylabel("Plasma glucose (mg/dL)")
+    axs[1].plot(t, insulin);   axs[1].set_ylabel("Plasma insulin (µU/mL)")
+    axs[2].plot(t, glucagon);  axs[2].set_ylabel("Blood glucagon (pg/mL)")
+    axs[2].set_xlabel("Time (min)")
+    plt.tight_layout(); plt.show()
+
 # ---------------------------
 # Script entry
 # ---------------------------
 
 if __name__ == "__main__":
-    res = simulate(total_minutes=20, load_duration_min=2.0)
+    # --- PAPER MODE (in vitro, clamped glucose) ---
+    res = simulate(total_minutes=20, burn_in_minutes=30, mode="clamped")
     plot_figure6_like(res)
+    debug_plots_clamped(res)
+
+    # # --- IN VIVO MODE (whole-body + cell) ---
+    # res2 = simulate(total_minutes=20, load_duration_min=3.0, burn_in_minutes=60, mode="cobelli")
+    # plot_figure6_like(res2)
+    # debug_plots_cobelli(res2)

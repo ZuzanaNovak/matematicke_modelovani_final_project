@@ -11,16 +11,15 @@ from scipy.integrate import solve_ivp
 def safe_exp(z, clip=50.0):
     return np.exp(np.clip(z, -clip, clip))
 
-FRT_INV_MV = 0.037 
-
+FRT_INV_MV = 0.037  # 0.5*F/RT in 1/mV (scaled as needed)
 
 
 @dataclass
 class DualOscParams:
     # Glycolytic (Table A1)
-    Vglut: float = 8.0
+    Vglut: float = 8.0      # mM/s   (paper)
     Kglut: float = 8.0
-    Vgk:   float = 0.8       # mM/ms  (Table A1)
+    Vgk:   float = 0.8      # mM/s   (paper)
     Kgk:   float = 7.0
     ngk:   float = 4.0
 
@@ -60,7 +59,7 @@ class DualOscParams:
     Am_tot: float = 15.0
     Cm: float = 1.8
 
-# Ca2+ (Table A1)
+    # Ca2+ (Table A1)
     C: float = 5300.0
     tau_n: float = 20.0
     gK: float = 2700.0; gCa: float = 1000.0; gK_Ca: float = 300.0; gK_ATP: float = 16000.0
@@ -111,6 +110,7 @@ class CobelliParams:
     @property
     def V2(self):  return self.V2_frac  * self.BW_kg * 10
 
+
 # ---------------------------
 # Helper nonlinear functions (Cobelli)
 # ---------------------------
@@ -133,7 +133,8 @@ def cobelli_functions(u, p: CobelliParams):
     M2 = 0.5 * p.a22 * (1 + tanh(p.b22 * (ex  + p.c22)))
     F2 = H2 + M2
 
-    if Ge > 252.0:
+    # renal excretion term (active only at hyperglycemia)
+    if Ge > 252.0:  # mg/dL
         M31 = 0.5 * (1 + tanh(p.b31 * (u1 + p.c31)))
         M32 = p.a31 * u1 + p.a32
         F3 = M31 * M32
@@ -157,6 +158,7 @@ def cobelli_functions(u, p: CobelliParams):
 
     return Ge, y2, y3, y4, y5, ex, F1, F2, F3, F4, F5, W, F6, F7
 
+
 # ---------------------------
 # Dual Oscillator pieces (Appendix A)
 # ---------------------------
@@ -176,6 +178,7 @@ def pfk_rate(F6P_uM, FBP_uM, ATP_uM, AMP_uM, par: DualOscParams):
     )
     return par.Vmax * (num/den)  # µM/ms
 
+
 def dual_oscillator_rhs(t_min, x, Ge_mg_per_100ml: float, par: DualOscParams):
     """
     x = [Gi (mM), G6P (µM), FBP (µM), NADHm (mM), phi_m (mV),
@@ -183,42 +186,42 @@ def dual_oscillator_rhs(t_min, x, Ge_mg_per_100ml: float, par: DualOscParams):
     """
     Gi, G6P, FBP, NADHm, phi_m, Ca_m, ADPm, V, n, Ca_c, Ca_er, ATP_c = x
 
-    # A.1–A.3 GLUT2 + GK (Gi in mM, Jglut/JGK in mM/ms)
-    Ge_mM = Ge_mg_per_100ml/18.0
-    Vglut_ms = par.Vglut/1000.0
-    Vgk_ms   = par.Vgk/1000.0
-    Jglut = Vglut_ms * (Ge_mM - Gi) * par.Kglut / ((par.Kglut + Ge_mM)*(par.Kglut + Gi))   # mM/ms
-    JGK   = Vgk_ms   * (Gi**par.ngk) / (par.Kgk**par.ngk + Gi**par.ngk) 
-    
+    # A.1–A.3 GLUT2 + GK  (convert paper's mM/s → mM/ms)
+    Ge_mM = Ge_mg_per_100ml / 18.0
+    Vglut_ms = par.Vglut / 1000.0  # mM/ms
+    Vgk_ms   = par.Vgk   / 1000.0  # mM/ms
+
+    Jglut = Vglut_ms * (Ge_mM - Gi) * par.Kglut / ((par.Kglut + Ge_mM) * (par.Kglut + Gi))  # mM/ms
+    JGK   = Vgk_ms   * (Gi**par.ngk) / (par.Kgk**par.ngk + Gi**par.ngk)                      # mM/ms
     dGi   = Jglut - JGK
 
-    # A.4–A.7 glycolysis (G6P/FBP in µM, PFK/GPDH in µM/ms)
+    # A.4–A.7 glycolysis (G6P/FBP in µM; PFK/GPDH in µM/ms)
     F6P   = 0.3 * G6P
-    JPFK  = pfk_rate(F6P, FBP, ATP_c, par.AMP_c, par)
-    JGPDH = par.kGPDH * np.sqrt(max(FBP, 0.0))
-    dG6P  = (JGK*1000.0) - JPFK          # mM/ms → µM/ms  (correct conversion)
-    dFBP  = JPFK - 0.5*JGPDH
+    JPFK  = pfk_rate(F6P, FBP, ATP_c, par.AMP_c, par)          # µM/ms
+    JGPDH = par.kGPDH * np.sqrt(max(FBP, 0.0))                 # µM/ms
+    dG6P  = (JGK * 1000.0) - JPFK                               # mM/ms → µM/ms
+    dFBP  = JPFK - 0.5 * JGPDH
 
     # Mitochondria A.8–A.22 (NADHm, ADPm are mM; use 0.001 to convert µM→mM)
     NADm = max(par.NADm_tot - NADHm, 0.0)
     RATm = max((par.Am_tot - ADPm)/max(ADPm, 1e-12), 0.0)
 
-    JPDH = ((par.p1*NADm)/(par.p2*NADm + NADHm)) * (Ca_m/(par.p3 + Ca_m)) * (JGPDH + par.JGPDH_bas)
-    Jo   = ((par.p4*NADHm)/(par.p5 + NADHm)) * (1.0/(1.0 + safe_exp((phi_m - par.p6)/par.p7)))
-    dNADHm = 0.001*(JPDH - Jo)
+    JPDH   = ((par.p1*NADm)/(par.p2*NADm + NADHm)) * (Ca_m/(par.p3 + Ca_m)) * (JGPDH + par.JGPDH_bas)
+    Jo     = ((par.p4*NADHm)/(par.p5 + NADHm)) * (1.0/(1.0 + safe_exp((phi_m - par.p6)/par.p7)))
+    dNADHm = 0.001 * (JPDH - Jo)
 
     JH_res = ((par.p8*NADHm)/(par.p9 + NADHm)) * (1.0/(1.0 + safe_exp((phi_m - par.p10)/par.p11)))
     JF1F0  = (par.p13/(par.p13 + (par.Am_tot - ADPm))) * (par.p16/(1.0 + safe_exp((par.p14 - phi_m)/par.p15)))
-    JH_atp = 3.0*JF1F0
+    JH_atp = 3.0 * JF1F0
     JANT   = par.p19 * (RATm/(RATm + par.p20)) * safe_exp(0.5*FRT_INV_MV*phi_m)
     JH_leak = par.p17*phi_m + par.p18
 
-    Juni   = (par.p21*phi_m - par.p22) * Ca_c
-    JNaCa  = par.p23 * (Ca_m/max(Ca_c, 1e-9)) * safe_exp(par.p24*phi_m)
+    Juni  = (par.p21*phi_m - par.p22) * Ca_c
+    JNaCa = par.p23 * (Ca_m/max(Ca_c, 1e-9)) * safe_exp(par.p24*phi_m)
 
-    dphi_m = (JH_res - JH_atp - JANT - JH_leak - 2.0*Juni - JNaCa)/par.Cm
-    dCa_m  = -par.fm*(JNaCa - Juni)
-    dADPm  = 0.001*(JANT - JF1F0)
+    dphi_m = (JH_res - JH_atp - JANT - JH_leak - 2.0*Juni - JNaCa) / par.Cm
+    dCa_m  = -par.fm * (JNaCa - Juni)
+    dADPm  = 0.001 * (JANT - JF1F0)
 
     # Membrane & Ca2+ (A.23–A.33, A.40–A.45)
     n_inf = 1.0/(1.0 + safe_exp(-(V + 16.0)/5.0))
@@ -236,22 +239,23 @@ def dual_oscillator_rhs(t_min, x, Ge_mg_per_100ml: float, par: DualOscParams):
     IKCa  = gKCa * (V - par.VK)
     IKATP = gKATP * (V - par.VK)
 
-    dV = -(IK + ICa + IKCa + IKATP)/par.C
-    dn = (n_inf - n)/par.tau_n
+    dV = -(IK + ICa + IKCa + IKATP) / par.C
+    dn = (n_inf - n) / par.tau_n
 
-    Jmem  = -(par.alpha*ICa + par.kPMCA*(Ca_c - par.Ca_bas))
-    Jleak = par.pleak * (Ca_er - Ca_c)
-    JSERCA = par.kSERCA*Ca_c
-    Jer   = Jleak - JSERCA
+    Jmem   = -(par.alpha*ICa + par.kPMCA*(Ca_c - par.Ca_bas))
+    Jleak  = par.pleak * (Ca_er - Ca_c)
+    JSERCA = par.kSERCA * Ca_c
+    Jer    = Jleak - JSERCA
 
     dCa_c  = par.fc  * (Jmem + Jer + par.vol_ratio*(JNaCa - Juni))
     dCa_er = -par.fer * par.Vc_over_Ver * Jer
 
-    # Cytosolic ATP (physically correct sign)
-    Jhyd   = (par.khyd*Ca_c + par.khyd_bas)*ATP_c
+    # Cytosolic ATP
+    Jhyd   = (par.khyd*Ca_c + par.khyd_bas) * ATP_c
     dATP_c = par.vol_ratio*JANT - Jhyd
 
     return np.array([dGi, dG6P, dFBP, dNADHm, dphi_m, dCa_m, dADPm, dV, dn, dCa_c, dCa_er, dATP_c])
+
 
 # ---------------------------
 # Cobelli ODE system (Appendix B)
@@ -273,6 +277,7 @@ def cobelli_rhs(t_min, u, par: CobelliParams, Ix_func: Callable[[float], float],
 
     return np.array([du1, du1p, du2p, du11, du12, du13, du2])
 
+
 # ---------------------------
 # Coupled system (integrated in ms)
 # ---------------------------
@@ -285,6 +290,7 @@ def coupled_rhs_ms(t_ms, y, dop: DualOscParams, cop: CobelliParams, Ix_func, Iu_
     Ge = u[0]/cop.V1
     dx_ms = dual_oscillator_rhs(t_min, x, Ge, dop)
     return np.concatenate([du_ms, dx_ms])
+
 
 # ---------------------------
 # Initialization helpers
@@ -302,12 +308,12 @@ def initial_cobelli(cop: CobelliParams) -> np.ndarray:
     return np.array([u1, u1p, u2p, u11, u12, u13, u2])
 
 def initial_dual_osc(dop: DualOscParams) -> np.ndarray:
-    # Reasonable ICs; not too far from paper's states
     Gi = 7.0; G6P = 50.0; FBP = 10.0
     NADHm = 0.5; phi_m = 160.0; Ca_m = 0.2
     ADPm = 1.0; V = -60.0; n = 0.05
     Ca_c = 0.1; Ca_er = 200.0; ATP_c = 1200.0
     return np.array([Gi, G6P, FBP, NADHm, phi_m, Ca_m, ADPm, V, n, Ca_c, Ca_er, ATP_c])
+
 
 # ---------------------------
 # Burn-in helper
@@ -322,6 +328,7 @@ def burn_in_clamped(x0, dop, Ge_mM: float, minutes: float, rtol=2e-5, atol=5e-8,
         raise RuntimeError("Burn-in failed: " + sol.message)
     return sol.y[:, -1]
 
+
 # ---------------------------
 # Diagnostics
 # ---------------------------
@@ -329,36 +336,41 @@ def burn_in_clamped(x0, dop, Ge_mM: float, minutes: float, rtol=2e-5, atol=5e-8,
 def glycolysis_diagnostics(x, dop: DualOscParams, Ge_mM: float):
     Gi, G6P, FBP, *_rest = x
     F6P = 0.3*G6P
-    JGK_mMms = dop.Vgk*(Gi**dop.ngk)/(dop.Kgk**dop.ngk + Gi**dop.ngk)
-    JGK = JGK_mMms*1000.0  # µM/ms
-    JPFK = pfk_rate(F6P, FBP, _rest[-1], dop.AMP_c, dop)
-    JGPDH = dop.kGPDH*np.sqrt(max(FBP,0.0))
+    # GK in mM/ms from paper's mM/s
+    JGK_mMms = (dop.Vgk/1000.0) * (Gi**dop.ngk) / (dop.Kgk**dop.ngk + Gi**dop.ngk)
+    JGK = 1000.0 * JGK_mMms  # µM/ms
+    JPFK = pfk_rate(F6P, FBP, _rest[-1], dop.AMP_c, dop)  # µM/ms
+    JGPDH = dop.kGPDH*np.sqrt(max(FBP, 0.0))              # µM/ms
     return JGK, JPFK, JGPDH
+
 
 # ---------------------------
 # Calibration (kept tiny & local)
 # ---------------------------
 
 def calibrate_fluxes_at_baseline(dop: DualOscParams, Ge_mM: float, minutes: float = 8.0):
-    """
-    Burn-in at baseline Ge, measure JGK/JPFK, and rescale only Vmax so that
-    JPFK ≈ JGK. Leave kGPDH under manual control (set via dual_overrides).
-    """
-    # burn-in with current params
+    # 1) Burn in once to get a reasonable cellular state at baseline Ge
     x0 = burn_in_clamped(initial_dual_osc(dop), dop, Ge_mM, minutes)
-    JGK0, JPFK0, JGPDH0 = glycolysis_diagnostics(x0, dop, Ge_mM)
 
-    # rescale PFK to match GK
-    scale_Vmax = JGK0 / max(JPFK0, 1e-12)
-    dop = replace(dop, Vmax=dop.Vmax * scale_Vmax)
+    # 2) Evaluate JGK at that state (in µM/ms), but evaluate JPFK with FBP clamped to ~5 µM
+    Gi, G6P, *_ = x0
+    ATP_c = x0[11]
+    F6P = 0.3*G6P
 
-    # re-check after scaling
-    x1 = burn_in_clamped(initial_dual_osc(dop), dop, Ge_mM, minutes)
-    JGK1, JPFK1, JGPDH1 = glycolysis_diagnostics(x1, dop, Ge_mM)
-    ratio = JGPDH1 / max(JPFK1, 1e-12)
-    print(f"[Calibrated @ {Ge_mM:.1f} mM]  JGK={JGK1:.3e}, JPFK={JPFK1:.3e}, "
-          f"JGPDH={JGPDH1:.3e}  (µM/ms),  JGPDH/JPFK={ratio:.2f}")
+    JGK_uMms = compute_JGK(Gi, dop) * 1000.0
+    FBP_ref  = 5.0  # µM target for calibration (low-µM regime)
+    JPFK_uMms = pfk_rate(F6P, FBP_ref, ATP_c, dop.AMP_c, dop)
+
+    # 3) Rescale only PFK Vmax so that JPFK ≈ JGK at that reference point
+    scale = JGK_uMms / max(JPFK_uMms, 1e-12)
+    dop = replace(dop, Vmax=dop.Vmax * scale)
+
+    # Optional: quick report
+    print(f"[Calib @ {Ge_mM:.1f} mM] target FBP={FBP_ref:.1f} µM, "
+          f"JGK={JGK_uMms:.3e}, JPFK(clamped)→{(JPFK_uMms*scale):.3e} (µM/ms)")
+
     return dop
+
 
 
 # ---------------------------
@@ -378,7 +390,7 @@ def simulate(total_minutes: float = 120.0,
              ge_sweep_period_min: float = 80.0,
              # paper-faithful vs exploratory
              strict: bool = True,
-             burst_helper_tweaks: bool = True,  # tiny nudges that keep close to paper
+             burst_helper_tweaks: bool = True,
              # numerical
              rtol: float = 2e-5, atol: float = 5e-8, max_step: float = 200.0,
              # kick
@@ -389,28 +401,37 @@ def simulate(total_minutes: float = 120.0,
              BW_kg: float = 70.0,
              dual_overrides: Optional[dict] = None):
 
-    dop = DualOscParams()  # Table A1 by default
+    dop = DualOscParams()
 
-    # Optional minimal tweaks that improve bursting without straying far:
-    #  - slightly easier depolarization (gK_ATP ↓ 10%)
-    #  - a bit less PMCA (kPMCA ↓ 15%) → modestly higher Ca_c
-    #  - slightly smaller adenine pool (Ac_tot ↓ 10%) → larger ADP swings
     if burst_helper_tweaks and strict:
         dop = replace(dop, gK_ATP=dop.gK_ATP*0.9, kPMCA=dop.kPMCA*0.85, Ac_tot=dop.Ac_tot*0.9)
 
-    # Apply user overrides last if provided
     if dual_overrides:
         dop = replace(dop, **dual_overrides)
 
-    # --- Calibrate glycolytic flux balance at baseline (tiny rescaling only) ---
+    # Calibrate glycolytic balance at baseline Ge
     dop = calibrate_fluxes_at_baseline(dop, ge_baseline_mM, minutes=8.0)
+    # --- Calibrate kGPDH to pin FBP near a physiological target ---
+    # Brief burn-in at baseline just to *measure* baseline JPFK with the new Vmax
+    x_probe = burn_in_clamped(initial_dual_osc(dop), dop, ge_baseline_mM, minutes=2.0,
+                            rtol=rtol, atol=atol, max_step=max_step)
+    JGK0_uMms, JPFK0_uMms, _ = glycolysis_diagnostics(x_probe, dop, ge_baseline_mM)
+
+    # Choose an FBP target in the tens of µM (typical modeling range)
+    FBP_target = 20.0   # µM (you can try 10–50 µM)
+    JPFK_base  = JPFK0_uMms
+
+    # From dFBP = JPFK - 0.5*kGPDH*sqrt(FBP) ≈ 0 at baseline  ⇒  kGPDH = 2*JPFK_base/sqrt(FBP_target)
+    k_needed = 2.0 * JPFK_base / np.sqrt(FBP_target)
+    dop = replace(dop, kGPDH=k_needed)
+    print(f"[kGPDH calibration] kGPDH = {k_needed:.3e} µM^(1/2)/ms  (FBP_target={FBP_target:g} µM)")
 
 
-    # burn-in (clamped at baseline glucose)
+    # burn-in (clamped)
     x0 = initial_dual_osc(dop)
     x0 = burn_in_clamped(x0, dop, ge_baseline_mM, burn_in_minutes, rtol, atol, max_step)
 
-    # print diagnostics at end of burn-in
+    # diagnostics at end of burn-in
     JGK0, JPFK0, JGPDH0 = glycolysis_diagnostics(x0, dop, ge_baseline_mM)
     print(f"[Diagnostics @ burn-in end] JGK={JGK0:.4e}  JPFK={JPFK0:.4e}  JGPDH={JGPDH0:.4e}  (µM/ms)")
 
@@ -419,7 +440,7 @@ def simulate(total_minutes: float = 120.0,
         x0[2] += kick_FBP_uM  # FBP
         x0[7] += kick_V_mV    # V
 
-    # glucose-time function for clamped mode
+    # clamped plasma glucose profile
     def Ge_profile(t_min: float) -> float:
         if profile == "step":
             Ge_mM = ge_baseline_mM if t_min < ge_step_time_min else ge_step_mM
@@ -486,6 +507,7 @@ def simulate(total_minutes: float = 120.0,
         "description": "Cobelli-coupled run; u=[u1,u1p,u2p,u11,u12,u13,u2]; x=[Gi,G6P,FBP,NADHm,phi_m,Ca_m,ADPm,V,n,Ca_c,Ca_er,ATP_c]"
     }
 
+
 # ---------------------------
 # Convenience metrics & plotting
 # ---------------------------
@@ -493,8 +515,9 @@ def simulate(total_minutes: float = 120.0,
 def compute_Jo(NADHm, phi_m, par: DualOscParams):
     return ((par.p4*NADHm)/(par.p5 + NADHm)) * (1.0/(1.0 + safe_exp((phi_m - par.p10)/par.p11)))
 
-def compute_JGK(Gi_mM, par: DualOscParams):
-    return par.Vgk*(Gi_mM**par.ngk)/(par.Kgk**par.ngk + Gi_mM**par.ngk)  # mM/ms
+def compute_JGK(Gi_mM, par):
+    return (par.Vgk/1000.0) * (Gi_mM**par.ngk) / (par.Kgk**par.ngk + Gi_mM**par.ngk)  # mM/ms
+
 
 def compute_o_inf(ATP_c_uM, ADP_c_uM):
     MgADP = 0.165*ADP_c_uM; ADP3 = 0.135*ADP_c_uM; ATP4 = 0.005*ATP_c_uM
@@ -507,7 +530,7 @@ def debug_plots_clamped(result):
     Ge = np.array([Ge_profile(tt) for tt in t]); Ge_mM = Ge/18.0
     Gi, FBP, ATP_c = x[0], x[2], x[11]
     ADP_c = np.maximum(par.Ac_tot - ATP_c, 0.0)
-    JGK = compute_JGK(Gi, par)*1000.0
+    JGK = compute_JGK(Gi, par)*1000.0  # µM/ms
     JPFK = pfk_rate(0.3*x[1], FBP, ATP_c, par.AMP_c, par)
     oinf = compute_o_inf(ATP_c, ADP_c)
     fig, axs = plt.subplots(4,1, figsize=(8,8), sharex=True)
@@ -602,21 +625,6 @@ def plot_body_to_cellular_linked(result, save_path=None, figsize=(10, 12)):
     ax_n2.set_ylabel(r"$J_o$ (µM/ms)")
     ax_n.set_xlabel("Time (min)")
 
-    link_kwargs = dict(arrowstyle="->", color="0.3", lw=1.2, shrinkA=5, shrinkB=5,
-                       connectionstyle="arc3,rad=-0.15")
-    ax_ge.annotate("", xy=(t[len(t)//5], series["JGK_uMms"][len(t)//5]),
-                   xytext=(t[len(t)//5], Ge_mM[len(t)//5]),
-                   xycoords=(ax_j.transData), textcoords=(ax_ge.transData),
-                   arrowprops=link_kwargs)
-    ax_ge.annotate("", xy=(t[len(t)//3], series["Ca_c_uM"][len(t)//3]),
-                   xytext=(t[len(t)//3], Ge_mM[len(t)//3]),
-                   xycoords=(ax_c.transData), textcoords=(ax_ge.transData),
-                   arrowprops=link_kwargs)
-    ax_ge.annotate("", xy=(t[len(t)//2], series["ATP_c_uM"][len(t)//2]),
-                   xytext=(t[len(t)//2], Ge_mM[len(t)//2]),
-                   xycoords=(ax_atp.transData), textcoords=(ax_ge.transData),
-                   arrowprops=link_kwargs)
-
     for ax in [ax_ge, ax_j, ax_f, ax_c, ax_v, ax_atp, ax_n]:
         ax.grid(True, alpha=0.15)
 
@@ -626,15 +634,7 @@ def plot_body_to_cellular_linked(result, save_path=None, figsize=(10, 12)):
     plt.show()
 
 
-
-
-def plot_chew2009_style(result, save_path=None,
-                        skip_fast=20, skip_slow=2):
-    """
-    Paper-style plots with different skips for fast vs slow variables.
-    - fast: Ca, V, NADH, Jo
-    - slow: ATP, FBP
-    """
+def plot_chew2009_style(result, save_path=None, skip_fast=20, skip_slow=2):
     import numpy as np
     import matplotlib.pyplot as plt
     import matplotlib.gridspec as gridspec
@@ -646,34 +646,31 @@ def plot_chew2009_style(result, save_path=None,
     def ds(arr, skip):  # downsample helper
         return arr[::skip] if skip > 1 else arr
 
-    # --- downsample with two categories ---
+    # downsample
     t_fast = ds(t, skip_fast)
     t_slow = ds(t, skip_slow)
 
-    Ge_ds = ds(Ge_mM, skip_slow)     # slow
-    JGK_ds   = ds(series["JGK_uMms"], skip_slow)
-    JPFK_ds  = ds(series["JPFK_uMms"], skip_slow)
-    FBP_ds   = ds(series["FBP_uM"], skip_slow)
-    ATP_ds   = ds(series["ATP_c_uM"], skip_slow)
+    Ge_ds   = ds(Ge_mM, skip_slow)
+    JGK_ds  = ds(series["JGK_uMms"], skip_slow)
+    JPFK_ds = ds(series["JPFK_uMms"], skip_slow)
+    FBP_ds  = ds(series["FBP_uM"], skip_slow)
+    ATP_ds  = ds(series["ATP_c_uM"], skip_slow)
 
-    Ca_ds    = ds(series["Ca_c_uM"], skip_fast)
-    V_ds     = ds(series["V_mV"], skip_fast)
-    NADH_ds  = ds(series["NADHm_mM"], skip_fast)
-    Jo_ds    = ds(series["Jo_uMms"], skip_fast)
+    Ca_ds   = ds(series["Ca_c_uM"], skip_fast)
+    V_ds    = ds(series["V_mV"], skip_fast)
+    NADH_ds = ds(series["NADHm_mM"], skip_fast)
+    Jo_ds   = ds(series["Jo_uMms"], skip_fast)
 
-    # --- Composite figure ---
     fig = plt.figure(figsize=(10.0, 12.0), constrained_layout=True)
     gs = gridspec.GridSpec(7, 1, figure=fig,
                            height_ratios=[1.2, 1.1, 1, 1, 1, 1, 1])
 
-    # Row 1: Plasma glucose
     ax_ge = fig.add_subplot(gs[0, 0])
     ax_ge.plot(t_slow, Ge_ds, lw=1.6)
     ax_ge.set_ylabel("Glucose (mM)")
     ax_ge.set_title("Whole-body → Cellular linkage")
     ax_ge.grid(True, alpha=0.2)
 
-    # Row 2: JGK & JPFK
     ax_flux = fig.add_subplot(gs[1, 0], sharex=ax_ge)
     ax_flux.plot(t_slow, JGK_ds,  lw=1.5, label=r"$J_{GK}$")
     ax_flux.plot(t_slow, JPFK_ds, lw=1.2, alpha=0.9, label=r"$J_{PFK}$")
@@ -681,31 +678,26 @@ def plot_chew2009_style(result, save_path=None,
     ax_flux.grid(True, alpha=0.2)
     ax_flux.legend(loc="upper right", fontsize=9, ncol=2)
 
-    # Row 3: FBP
     ax_fbp = fig.add_subplot(gs[2, 0], sharex=ax_ge)
     ax_fbp.plot(t_slow, FBP_ds, lw=1.4)
     ax_fbp.set_ylabel("FBP (µM)")
     ax_fbp.grid(True, alpha=0.2)
 
-    # Row 4: Ca_c
     ax_ca = fig.add_subplot(gs[3, 0], sharex=ax_ge)
     ax_ca.plot(t_fast, Ca_ds, lw=1.4)
     ax_ca.set_ylabel(r"$Ca_c$ (µM)")
     ax_ca.grid(True, alpha=0.2)
 
-    # Row 5: V
     ax_v = fig.add_subplot(gs[4, 0], sharex=ax_ge)
     ax_v.plot(t_fast, V_ds, lw=1.2)
     ax_v.set_ylabel("V (mV)")
     ax_v.grid(True, alpha=0.2)
 
-    # Row 6: ATP_c
     ax_atp = fig.add_subplot(gs[5, 0], sharex=ax_ge)
     ax_atp.plot(t_slow, ATP_ds, lw=1.4)
     ax_atp.set_ylabel(r"$ATP_c$ (µM)")
     ax_atp.grid(True, alpha=0.2)
 
-    # Row 7: NADH_m + Jo
     ax_n = fig.add_subplot(gs[6, 0], sharex=ax_ge)
     ax_n.plot(t_fast, NADH_ds, lw=1.3, label=r"$NADH_m$ (mM)")
     ax_n.set_ylabel(r"$NADH_m$ (mM)")
@@ -716,7 +708,6 @@ def plot_chew2009_style(result, save_path=None,
     ax_n2.plot(t_fast, Jo_ds, lw=1.0, linestyle="--", label=r"$J_o$ (µM/ms)")
     ax_n2.set_ylabel(r"$J_o$ (µM/ms)")
 
-    # combined legend
     lines_left,  labels_left  = ax_n.get_legend_handles_labels()
     lines_right, labels_right = ax_n2.get_legend_handles_labels()
     if lines_left or lines_right:
@@ -739,22 +730,21 @@ def oscillation_score(result):
     print(f"[OscScore] std(V)={stdV:.3f}, std(Ca)={stdCa:.4f}, total={score:.3f}")
     return score
 
+
 # ---------------------------
 # Script entry (example)
 # ---------------------------
 
 if __name__ == "__main__":
     dual_overrides = {
-    "kGPDH": 6e-3,
-    "gK_ATP": 14000,
-    "kPMCA": 0.07,
-    "Ac_tot": 1400,    # ↓ total cytosolic adenine pool
-    "vol_ratio": 0.1,  # ↑ coupling mito→cyto ATP
-}
+        "kGPDH": 6e-3,
+        "gK_ATP": 14000,
+        "kPMCA": 0.07,
+        "Ac_tot": 1400,    # ↓ cytosolic adenine pool
+        "vol_ratio": 0.1,  # ↑ coupling mito→cyto ATP
+    }
 
-
-
-    res = simulate(
+    """res = simulate(
         total_minutes=120,
         burn_in_minutes=30,
         mode="clamped",
@@ -765,42 +755,32 @@ if __name__ == "__main__":
         strict=True,
         burst_helper_tweaks=True,
         kick=True,
-    )
+    )"""
+
     res2 = simulate(
-    total_minutes=120,
-    burn_in_minutes=30,
-    mode="cobelli",
-    glucose_load_mg_per_kg_min=100.0,
-    load_duration_min=3.0,
-    BW_kg=70.0,
-    dual_overrides={
-        "kGPDH": 8e-3,      # stronger glycolytic drain
-        "JGPDH_bas": 5e-4,  # small baseline sink
-        "gK_ATP": 16000,    # paper
-        "kPMCA": 0.12,      # more Ca extrusion → envelope decay
-        "kSERCA": 0.45,     # ER uptake → extra damping
-        "Ac_tot": 2200,     # larger pool → small ATP amplitude
-    },
-    strict=True,
-    kick=True,
-    kick_FBP_uM=1.0,   # smaller kick
-    kick_V_mV=-1.0,
-)
-
-
-
-
-
+        total_minutes=120,
+        burn_in_minutes=30,
+        mode="cobelli",
+        glucose_load_mg_per_kg_min=100.0,
+        load_duration_min=3.0,
+        BW_kg=70.0,
+        dual_overrides={
+            "kGPDH": 8e-3,
+            "JGPDH_bas": 5e-4,
+            "gK_ATP": 16000,
+            "kPMCA": 0.12,
+            "kSERCA": 0.45,
+            "Ac_tot": 2200,
+        },
+        strict=True,
+        kick=True,
+        kick_FBP_uM=1.0,
+        kick_V_mV=-1.0,
+    )
 
     plot_chew2009_style(res2, skip_fast=20, skip_slow=2)
-
-    plot_chew2009_style(res, skip_fast=20, skip_slow=2)
-    
+    #plot_chew2009_style(res,  skip_fast=20, skip_slow=2)
     oscillation_score(res2)
-
 
     import matplotlib.pyplot as plt
     plt.show()
-
-
-    

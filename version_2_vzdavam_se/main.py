@@ -173,6 +173,23 @@ def solve_glucagon_gain(P):
     M7b = 0.5*(1 - np.tanh(P.b72*(0 + P.c72)))
     target = P.h01 * P.y5_bas * P.V2
     return target / max(1e-12, H7b*M7b)
+def solve_insulin_basal(P, u1p0, u2p0):
+    """
+    Choose c6 (secretion setpoint) so F6_bas = k01*u1p0
+    and a5 (synthesis scale) so W_bas = k01*u1p0 - k21*u2p0.
+    Keeps u1p/u2p steady at basal.
+    """
+    # --- match secretion at basal: F6 = 0.5*a6*(1+tanh(b6*c6))*u2p0 = k01*u1p0
+    q = (2.0*P.k01*u1p0)/(P.a6*u2p0) - 1.0               # = tanh(b6*c6)
+    q = float(np.clip(q, -0.999, 0.999))
+    P.c6 = (np.arctanh(q))/P.b6
+
+    # --- match synthesis at basal: W = 0.5*a5*(1+tanh(b5*c5)) = k01*u1p0 - k21*u2p0
+    W0 = P.k01*u1p0 - P.k21*u2p0
+    g  = 0.5*(1.0 + np.tanh(P.b5*(0.0 + P.c5)))          # basal activation
+    P.a5 = W0 / max(g, 1e-12)
+    return P
+
 
 # ---------- ODEs ----------
 def rhs(t, s, P):
@@ -220,6 +237,7 @@ def integrate(f, t0, tf, dt, y0, P):
 
 os.makedirs("results_paperfit_v3", exist_ok=True)
 P = set_volumes(P); P.a7 = solve_glucagon_gain(P)
+P = solve_insulin_basal(P, u1p0=4.9e6, u2p0=4.9e5)
 T, Y = integrate(rhs, 0.0, 180.0, 0.05, initial_state(P), P)
 
 # ---------- derived & plots ----------

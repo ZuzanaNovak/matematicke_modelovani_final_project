@@ -3,7 +3,7 @@
 Minimal Python project for simulating a short-term glucose–insulin model and producing plots/tables.
 
 ## Project structure
-.
+```
 ├─ .vscode/                # Editor settings
 ├─ results_extras/         # Extra figures/CSV outputs from optional analyses
 ├─ results_modular/        # Main results folder (plots, CSVs)
@@ -19,7 +19,6 @@ Minimal Python project for simulating a short-term glucose–insulin model and p
 ├─ scenarios.py            # Predefined scenario builders (baseline, perturbed, etc.)
 ├─ state.py                # State representation & initial conditions
 └─ utils.py                # Small shared utilities (I/O, paths, interpolation)
-
-
+```
 
 

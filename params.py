@@ -17,7 +17,7 @@ class Params:
     # beta-cell pools/secretion
     k01: float = 0.03; k21: float = 4.34e-3; k12: float = 0.0
     a5: float = 0.287; b5: float = 1.51e-2; c5: float = -92.3
-    a6: float = 2.4;   b6: float = 9.23e-3; c6: float = -10.0
+    a6: float = 1.4;   b6: float = 9.23e-3; c6: float = -10.0
 
     # insulin kinetics
     m01: float = 0.110; m02: float = 0.170; m12: float = 0.209
@@ -26,10 +26,10 @@ class Params:
     # glucagon kinetics
     h01: float = math.log(2)/8.0
 
-    # glucagon secretion (gain solved at runtime)
+    # glucagon secretion 
     a7:  float = None
-    b71: float = 0.0053; c71: float = 115.0
-    b72: float = 0.070;  c72: float = 52.0
+    b71: float = 0.0020; c71: float = 150.0
+    b72: float = 0.030;  c72: float = 80.0
 
     # Hepatic production F1 (per kg)
     a11: float = 5.5;  b11: float = 1.60; c11: float = -1.10
@@ -55,12 +55,11 @@ class Params:
     a41: float = 1.0e-3; b41: float = 0.031;  c41: float = -50.9
     a42: float = 4.6e-6; b42: float = 0.0144; c42: float = -20.2
 
-    # Glucagon secretion shaping (optional but recommended)
-    # Glucagon secretion shaping (recommended)
-    F7_tonic_frac: float = 0.60     # ↑ 60% of basal is tonic (constant) secretion
-    F7_max_perkg:  float = 400.0    # ↓ cap to 400 pg/min/kg  (~28,000 pg/min for 70 kg)
-    F7_floor:      float = 0.0      # lower clamp (pg/min)
-    tau7_min:      float = 8.0      # NEW: secretion smoothing time constant [min]
+    # Glucagon secretion shaping 
+    F7_tonic_frac: float = 0.30     
+    F7_max_perkg:  float = 100.0    
+    F7_floor:      float = 0.0      
+    tau7_min:      float = 8.0      
 
     # Filled by solve_glucagon_gain()
     F7_tonic: float = 0.0           # pg/min (computed)

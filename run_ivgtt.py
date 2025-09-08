@@ -67,7 +67,3 @@ if __name__ == "__main__":
         d_ol
     )
 
-    # Console summaries
-    print("== SUMMARY: CONTROL =="); [print(f"{k}: {v}") for k,v in Sc.items()]
-    print("\n== SUMMARY: T2D ==");    [print(f"{k}: {v}") for k,v in Sd.items()]
-    print(f"\nOutputs written to: {base}")

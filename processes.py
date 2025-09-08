@@ -1,9 +1,8 @@
-# processes.py
 import numpy as np
 from utils import tanh
 from params import Params
 
-# ----- helpers -----
+#  helpers 
 def concentrations(state, P: Params):
     x1,u1p,u2p,u11,u12,u13,u2 = state
     y1 = x1 / P.V1 * 100.0
@@ -23,7 +22,7 @@ def deviations(y1,y2,y3,y4,y5,P):
 def scale_bw(rate_mg_min_per_kg: float, P: Params) -> float:
     return rate_mg_min_per_kg * P.BW_kg
 
-# ----- glucose unit processes (per kg) -----
+#   glucose unit processes (per kg)
 def F1_LiverProduction_perkg(x1,u12,u2,P: Params):
     y1,_,y3,_,y5 = concentrations((x1,0,0,0,u12,0,u2),P)
     e1,e12,_,e21 = deviations(y1,0,y3,0,y5,P)
@@ -59,7 +58,7 @@ def F5_PeripheralInd_perkg(x1,P: Params):
     M42 = P.a42 * 0.5*(1 + tanh(P.b42*(e1 + P.c42)))
     return 3e2 * (M41 + M42)
 
-# ----- secretions -----
+#   secretions  
 def W_insulin_synthesis(x1,P: Params) -> float:
     y1,_,_,_,_ = concentrations((x1,0,0,0,0,0,0),P)
     e1,_,_,_ = deviations(y1,0,0,0,0,P)
@@ -70,12 +69,23 @@ def F6_secretion(x1,u2p,P: Params) -> float:
     e1,_,_,_ = deviations(y1,0,0,0,0,P)
     return 0.5*P.a6*(1 + tanh(P.b6*(e1 + P.c6))) * u2p
 
-def F7_glucagon_secretion(x1,u13,P: Params) -> float:
-    y1,_,_,y4,_ = concentrations((x1,0,0,0,0,u13,0),P)
+def F7_glucagon_secretion(x1, u13, P: Params) -> float:
+    """α-cell glucagon secretion (pg/min), with tonic + floor + max applied."""
+    y1,_,_,y4,_ = concentrations((x1,0,0,0,0,u13,0), P)
     e1,_,e13,_ = deviations(y1,0,0,y4,0,P)
-    H7 = 0.5*(1 - tanh(P.b71*(e13 + P.c71)))
-    M7 = 0.5*(1 - tanh(P.b72*(e1  + P.c72)))
-    return P.a7 * H7 * M7
+
+    # inhibitions
+    H7 = 0.5*(1 - tanh(P.b71*(e13 + P.c71)))   # insulin effect
+    M7 = 0.5*(1 - tanh(P.b72*(e1  + P.c72)))   # glucose effect
+
+    # tonic + dynamic
+    F7 = P.F7_tonic + P.a7 * H7 * M7
+
+    # enforce floor and cap
+    if P.F7_max is None:
+        P.F7_max = P.F7_max_perkg * P.BW_kg
+    return float(np.clip(F7, P.F7_floor, P.F7_max))
+
 
 def solve_glucagon_gain(P: Params) -> float:
     # Basal inhibitions (at deviations = 0)
@@ -103,7 +113,6 @@ def solve_glucagon_gain(P: Params) -> float:
     P.a7 = a7
     return a7
 def F7_target(x1: float, u13: float, P: Params) -> float:
-    """Instantaneous α-cell target secretion before smoothing (pg/min)."""
     y1,_,_,y4,_ = concentrations((x1,0,0,0,0,u13,0), P)
     e1,_,e13,_  = deviations(y1,0,0,y4,0,P)
     H7 = 0.5*(1 - tanh(P.b71*(e13 + P.c71)))     # insulin inhibition
@@ -114,7 +123,6 @@ def F7_target(x1: float, u13: float, P: Params) -> float:
     return float(np.clip(F7, P.F7_floor, P.F7_max))
 
 def solve_insulin_basal(P: Params, u1p0: float, u2p0: float) -> Params:
-    """Anchor basal u1p/u2p so pools do not drift."""
     q = (2.0*P.k01*u1p0)/(P.a6*u2p0) - 1.0  # tanh(b6*c6)
     q = float(np.clip(q, -0.999, 0.999))
     P.c6 = (np.arctanh(q))/P.b6

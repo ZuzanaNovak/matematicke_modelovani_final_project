@@ -1,4 +1,3 @@
-# model.py
 import numpy as np
 from params import Params
 from inputs import Z1_glucose_input, Z2_insulin_input
@@ -45,6 +44,6 @@ def integrate(f, t0, tf, dt, y0, P: Params):
         k3 = f(t+0.5*h,   Y[i-1]+0.5*h*k2,   P)
         k4 = f(t+h,       Y[i-1]+h*k3,       P)
         Y[i] = Y[i-1] + (h/6.0)*(k1 + 2*k2 + 2*k3 + k4)
-        # non-negativity clamp for amounts
+        # non-negativity clamp 
         Y[i,1:] = np.maximum(Y[i,1:], 0.0)
     return T, Y
